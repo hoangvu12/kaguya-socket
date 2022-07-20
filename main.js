@@ -1,12 +1,10 @@
 import { Server } from "socket.io";
-import express from "express";
 import http from "http";
 import "dotenv/config";
 
 import supabase from "./supabase.js";
 
-const app = express();
-const server = http.createServer(app);
+const server = http.createServer();
 const io = new Server(server, {
   cors: {
     origin: [
@@ -18,16 +16,16 @@ const io = new Server(server, {
   path: `/${process.env.BASE_ROUTE}/socket.io`,
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 
 // 30 minutes ms
 const ROOM_DELETE_TIME = 30 * 60 * 1000;
 
-const updateEpisode = async (roomId, episodeId) => {
+const updateEpisode = async (roomId, episode) => {
   const { data, error } = await supabase
     .from("kaguya_rooms")
     .update({
-      episodeId,
+      episodeId: `${episode.sourceId}-${episode.sourceEpisodeId}`,
     })
     .match({ id: roomId });
 
@@ -36,21 +34,40 @@ const updateEpisode = async (roomId, episodeId) => {
   return data;
 };
 
-const joinRoom = async ({ roomId, socketId, userId }) => {
-  const { data, error } = await supabase.from("kaguya_room_users").upsert(
+const updateCommunicate = async (user, communicate) => {
+  const { userId } = user;
+  const { isMicMuted, isHeadphoneMuted } = communicate;
+
+  await supabase
+    .from("kaguya_room_users")
+    .update(
+      {
+        isMicMuted,
+        isHeadphoneMuted,
+      },
+      { returning: "minimal" }
+    )
+    .match({
+      userId,
+    });
+};
+
+const joinRoom = async ({ roomId, socketId, peerId, user }) => {
+  const { userId, name, avatarUrl } = user;
+
+  await supabase.from("kaguya_room_users").upsert(
     {
       roomId,
-      userId,
       id: socketId,
+      userId,
+      name,
+      avatarUrl,
+      peerId,
     },
     {
       returning: "minimal",
     }
   );
-
-  if (error) throw error;
-
-  return data;
 };
 
 const leaveRoom = async (socketId) => {
@@ -87,14 +104,25 @@ const getGlobalTime = () => {
 const rooms = {};
 
 io.on("connection", (socket) => {
-  socket.on("join", async (roomId, user) => {
+  socket.on("join", async (roomId, peerId, user) => {
     if (!rooms[roomId]) {
       rooms[roomId] = {};
     }
 
     const roomCache = rooms[roomId];
 
+    const roomUser = {
+      ...user,
+      id: socket.id,
+      peerId,
+      isMicMuted: true,
+      isHeadphoneMuted: false,
+      roomId,
+    };
+
     if (roomCache.timeoutId) {
+      console.log("cleared timeout");
+
       clearTimeout(roomCache.timeoutId);
     }
 
@@ -122,33 +150,30 @@ io.on("connection", (socket) => {
     await joinRoom({
       roomId,
       socketId: socket.id,
-      userId: user?.id || null,
+      user: roomUser,
+      peerId,
     }).catch(console.error);
 
-    eventEmit({ eventType: "join", user });
+    eventEmit({ eventType: "join", user: roomUser });
 
-    console.log(`${user?.user_metadata.name} joined room ${roomId}`);
-
-    invalidate();
+    console.log(`${user?.name || "Guest"} joined room ${roomId}`);
 
     socket.on("disconnect", async () => {
       const sockets = await io.in(roomId.toString()).fetchSockets();
 
-      console.log(`${user?.user_metadata.name} left room ${roomId}`);
+      console.log(`${user?.name || "Guest"} left room ${roomId}`);
 
       await leaveRoom(socket.id).catch(console.error);
 
-      eventEmit({ eventType: "leave", user });
+      eventEmit({ eventType: "leave", user: roomUser });
 
       if (!sockets.length) {
         roomCache.timeoutId = setTimeout(() => {
           deleteRoom(roomId).catch(console.error);
-        }, ROOM_DELETE_TIME); // 10 minutes
+        }, ROOM_DELETE_TIME);
 
         return;
       }
-
-      invalidate();
     });
 
     socket.on("getCurrentTime", () => {
@@ -156,16 +181,17 @@ io.on("connection", (socket) => {
     });
 
     socket.on("sendMessage", (message) => {
-      roomEmit("message", { body: message, user });
+      roomEmit("message", { body: message, user: roomUser });
     });
 
     socket.on("sendEvent", (eventType) => {
-      eventEmit({ eventType, user });
+      eventEmit({ eventType, user: roomUser });
     });
 
-    socket.on("changeEpisode", async (episodeId) => {
-      await updateEpisode(roomId, episodeId).catch(console.error);
-      invalidate();
+    socket.on("changeEpisode", async (episode) => {
+      roomEmit("changeEpisode", episode);
+
+      await updateEpisode(roomId, episode).catch(console.error);
     });
 
     socket.on("changeVideoState", (videoState) => {
@@ -188,6 +214,14 @@ io.on("connection", (socket) => {
       const time = getGlobalTime();
 
       socket.emit("timeSync-forward", time - timeAtClient);
+    });
+
+    socket.on("communicateToggle", (event) => {
+      roomEmit("communicateToggle", { event, user: roomUser });
+    });
+
+    socket.on("communicateUpdate", (communicate) => {
+      updateCommunicate(user, communicate);
     });
   });
 });
