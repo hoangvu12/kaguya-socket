@@ -34,19 +34,12 @@ const updateEpisode = async (roomId, episode) => {
   return data;
 };
 
-const updateCommunicate = async (user, communicate) => {
+const updateUserInfo = async (user, info) => {
   const { userId } = user;
-  const { isMicMuted, isHeadphoneMuted } = communicate;
 
   await supabase
     .from("kaguya_room_users")
-    .update(
-      {
-        isMicMuted,
-        isHeadphoneMuted,
-      },
-      { returning: "minimal" }
-    )
+    .update(info, { returning: "minimal" })
     .match({
       userId,
     });
@@ -118,6 +111,7 @@ io.on("connection", (socket) => {
       isMicMuted: true,
       isHeadphoneMuted: false,
       roomId,
+      useVoiceChat: false,
     };
 
     if (roomCache.timeoutId) {
@@ -140,10 +134,10 @@ io.on("connection", (socket) => {
       roomEmit("event", event);
     };
 
-    const invalidate = () => {
-      console.log("invalidate");
-      roomEmit("invalidate");
-    };
+    // const invalidate = () => {
+    //   console.log("invalidate");
+    //   roomEmit("invalidate");
+    // };
 
     await socket.join(roomId.toString());
 
@@ -220,8 +214,14 @@ io.on("connection", (socket) => {
       roomEmit("communicateToggle", { event, user: roomUser });
     });
 
+    socket.on("connectVoiceChat", (user) => {
+      roomEmit("connectVoiceChat", user);
+
+      updateUserInfo(user, { useVoiceChat: true });
+    });
+
     socket.on("communicateUpdate", (communicate) => {
-      updateCommunicate(user, communicate);
+      updateUserInfo(user, communicate);
     });
   });
 });
