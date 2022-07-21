@@ -97,22 +97,14 @@ const getGlobalTime = () => {
 const rooms = {};
 
 io.on("connection", (socket) => {
-  socket.on("join", async (roomId, peerId, user) => {
+  socket.on("join", async (roomId, peerId, roomUser) => {
     if (!rooms[roomId]) {
       rooms[roomId] = {};
     }
 
     const roomCache = rooms[roomId];
 
-    const roomUser = {
-      ...user,
-      id: socket.id,
-      peerId,
-      isMicMuted: true,
-      isHeadphoneMuted: false,
-      roomId,
-      useVoiceChat: false,
-    };
+    const userName = roomUser?.name || "Guest";
 
     if (roomCache.timeoutId) {
       console.log("cleared timeout");
@@ -120,24 +112,23 @@ io.on("connection", (socket) => {
       clearTimeout(roomCache.timeoutId);
     }
 
-    const roomEmit = (event, ...args) => {
-      socket.to(roomId.toString()).emit.apply(socket, [event, ...args]);
-    };
-
     const roomBroadcastEmit = (event, ...args) => {
       socket.broadcast
         .to(roomId.toString())
-        .emit.apply(socket, [event, ...args]);
+        .emit.apply(socket.broadcast, [event, ...args]);
+    };
+
+    const broadcastEventEmit = (event) => {
+      roomBroadcastEmit("event", event);
+    };
+
+    const roomEmit = (event, ...args) => {
+      socket.to(roomId.string).emit.apply(socket, [event, ...args]);
     };
 
     const eventEmit = (event) => {
       roomEmit("event", event);
     };
-
-    // const invalidate = () => {
-    //   console.log("invalidate");
-    //   roomEmit("invalidate");
-    // };
 
     await socket.join(roomId.toString());
 
@@ -150,12 +141,12 @@ io.on("connection", (socket) => {
 
     eventEmit({ eventType: "join", user: roomUser });
 
-    console.log(`${user?.name || "Guest"} joined room ${roomId}`);
+    console.log(`${userName} joined room ${roomId}`);
 
     socket.on("disconnect", async () => {
       const sockets = await io.in(roomId.toString()).fetchSockets();
 
-      console.log(`${user?.name || "Guest"} left room ${roomId}`);
+      console.log(`${userName} left room ${roomId}`);
 
       await leaveRoom(socket.id).catch(console.error);
 
@@ -175,7 +166,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("sendMessage", (message) => {
-      roomEmit("message", { body: message, user: roomUser });
+      roomBroadcastEmit("message", { body: message, user: roomUser });
     });
 
     socket.on("sendEvent", (eventType) => {
@@ -211,17 +202,17 @@ io.on("connection", (socket) => {
     });
 
     socket.on("communicateToggle", (event) => {
-      roomEmit("communicateToggle", { event, user: roomUser });
+      roomBroadcastEmit("communicateToggle", { event, user: roomUser });
     });
 
     socket.on("connectVoiceChat", (user) => {
-      roomEmit("connectVoiceChat", user);
+      roomBroadcastEmit("connectVoiceChat", user);
 
       updateUserInfo(user, { useVoiceChat: true });
     });
 
     socket.on("communicateUpdate", (communicate) => {
-      updateUserInfo(user, communicate);
+      updateUserInfo(roomUser, communicate);
     });
   });
 });
