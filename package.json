@@ -4,8 +4,10 @@
   "main": "main.js",
   "license": "MIT",
   "dependencies": {
+    "@redis/json": "^1.0.3",
     "@supabase/supabase-js": "^1.35.4",
     "dotenv": "^16.0.1",
+    "redis": "^4.2.0",
     "socket.io": "^4.5.1"
   },
   "type": "module",

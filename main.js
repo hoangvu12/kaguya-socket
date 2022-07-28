@@ -3,7 +3,11 @@ import http from "http";
 import "dotenv/config";
 
 import supabase from "./supabase.js";
+import { createClient as createRedisClient } from "redis";
 
+const redisClient = createRedisClient({
+  url: process.env.REDIS_URL,
+});
 const server = http.createServer();
 const io = new Server(server, {
   cors: {
@@ -94,32 +98,36 @@ const getGlobalTime = () => {
   return time;
 };
 
-const rooms = {};
+const timeouts = {};
 
 io.on("connection", (socket) => {
   socket.on("join", async (roomId, peerId, roomUser) => {
-    if (!rooms[roomId]) {
-      rooms[roomId] = {};
+    const ROOM_KEY = `room:'${roomId}'`;
+
+    if (!timeouts[roomId]) {
+      timeouts[roomId] = {};
     }
 
-    const roomCache = rooms[roomId];
+    const isRoomCacheExist = await redisClient.exists(ROOM_KEY);
+
+    if (!isRoomCacheExist) {
+      await redisClient.json.set(ROOM_KEY, "$", {});
+    }
+
+    const timeout = timeouts[roomId];
 
     const userName = roomUser?.name || "Guest";
 
-    if (roomCache.timeoutId) {
+    if (timeout?.deleteRoom) {
       console.log("cleared timeout");
 
-      clearTimeout(roomCache.timeoutId);
+      clearTimeout(timeout?.deleteRoom);
     }
 
     const roomBroadcastEmit = (event, ...args) => {
       socket.broadcast
         .to(roomId.toString())
         .emit.apply(socket.broadcast, [event, ...args]);
-    };
-
-    const broadcastEventEmit = (event) => {
-      roomBroadcastEmit("event", event);
     };
 
     const roomEmit = (event, ...args) => {
@@ -130,39 +138,17 @@ io.on("connection", (socket) => {
       roomEmit("event", event);
     };
 
-    await socket.join(roomId.toString());
-
-    await joinRoom({
-      roomId,
-      socketId: socket.id,
-      user: roomUser,
-      peerId,
-    }).catch(console.error);
-
     eventEmit({ eventType: "join", user: roomUser });
 
     console.log(`${userName} joined room ${roomId}`);
 
-    socket.on("disconnect", async () => {
-      const sockets = await io.in(roomId.toString()).fetchSockets();
+    socket.on("getCurrentTime", async () => {
+      const { currentPlayerTime } = await redisClient.json.get(
+        ROOM_KEY,
+        "$.currentPlayerTime"
+      );
 
-      console.log(`${userName} left room ${roomId}`);
-
-      await leaveRoom(socket.id).catch(console.error);
-
-      eventEmit({ eventType: "leave", user: roomUser });
-
-      if (!sockets.length) {
-        roomCache.timeoutId = setTimeout(() => {
-          deleteRoom(roomId).catch(console.error);
-        }, ROOM_DELETE_TIME);
-
-        return;
-      }
-    });
-
-    socket.on("getCurrentTime", () => {
-      socket.emit("currentTime", roomCache?.currentPlayerTime || 0);
+      socket.emit("currentTime", currentPlayerTime || 0);
     });
 
     socket.on("sendMessage", (message) => {
@@ -179,11 +165,21 @@ io.on("connection", (socket) => {
       await updateEpisode(roomId, episode).catch(console.error);
     });
 
-    socket.on("changeVideoState", (videoState) => {
+    socket.on("changeVideoState", async (videoState) => {
       if (videoState.type === "timeupdate") {
         const { currentTime } = videoState;
 
-        roomCache.currentPlayerTime = currentTime;
+        if (timeout.setPlayerTime) {
+          clearTimeout(timeout.setPlayerTime);
+        }
+
+        timeouts[roomId].setPlayerTime = setTimeout(async () => {
+          const isSuccess = await redisClient.json.set(
+            ROOM_KEY,
+            "$.currentPlayerTime",
+            currentTime
+          );
+        }, 1000);
       }
 
       roomBroadcastEmit("videoState", videoState);
@@ -214,9 +210,44 @@ io.on("connection", (socket) => {
     socket.on("communicateUpdate", (communicate) => {
       updateUserInfo(roomUser, communicate);
     });
+
+    socket.on("disconnect", async () => {
+      const sockets = await io.in(roomId.toString()).fetchSockets();
+
+      console.log(`${userName} left room ${roomId}`);
+
+      await leaveRoom(socket.id).catch(console.error);
+
+      eventEmit({ eventType: "leave", user: roomUser });
+
+      if (!sockets.length) {
+        timeout.deleteRoom = setTimeout(() => {
+          deleteRoom(roomId).catch(console.error);
+
+          delete timeouts[roomId];
+
+          redisClient.json.del(ROOM_KEY);
+        }, ROOM_DELETE_TIME);
+
+        return;
+      }
+    });
+
+    await socket.join(roomId.toString());
+
+    await joinRoom({
+      roomId,
+      socketId: socket.id,
+      user: roomUser,
+      peerId,
+    }).catch(console.error);
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`listening on *:${PORT}`);
-});
+(async () => {
+  await redisClient.connect();
+
+  server.listen(PORT, () => {
+    console.log(`listening on *:${PORT}`);
+  });
+})();
