@@ -22,6 +22,10 @@ Change `.env-example` to `.env`
 SUPABASE_KEY=
 SUPABASE_URL=
 
+# Redis
+
+REDIS_URL=
+
 # This will be your base route (https://example.com/BASE_ROUTE)
 
 BASE_ROUTE=
